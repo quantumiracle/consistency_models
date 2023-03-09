@@ -1,10 +1,64 @@
+# Copyright 2022 Twitter, Inc and Zhendong Wang.
+# SPDX-License-Identifier: Apache-2.0
+
+import numpy as np
 import math
-from typing import List
-
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+class SinusoidalPosEmb(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x):
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = x[:, None] * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return emb
+
+
+class MLP(nn.Module):
+    """
+    MLP Model
+    """
+    def __init__(self,
+                 state_dim,
+                 action_dim,
+                 device,
+                 t_dim=16):
+
+        super(MLP, self).__init__()
+        self.device = device
+
+        self.time_mlp = nn.Sequential(
+            SinusoidalPosEmb(t_dim),
+            nn.Linear(t_dim, t_dim * 2),
+            nn.Mish(),
+            nn.Linear(t_dim * 2, t_dim),
+        )
+
+        input_dim = state_dim + action_dim + t_dim
+        self.mid_layer = nn.Sequential(nn.Linear(input_dim, 256),
+                                       nn.Mish(),
+                                       nn.Linear(256, 256),
+                                       nn.Mish(),
+                                       nn.Linear(256, 256),
+                                       nn.Mish())
+
+        self.final_layer = nn.Linear(256, action_dim)
+
+    def forward(self, x, time, state):
+
+        t = self.time_mlp(time)
+        x = torch.cat([x, t, state], dim=1)
+        x = self.mid_layer(x)
+
+        return self.final_layer(x)
 
 
 blk = lambda ic, oc: nn.Sequential(
@@ -16,16 +70,14 @@ blk = lambda ic, oc: nn.Sequential(
     nn.Conv2d(oc, oc, 3, padding=1),
 )
 
-
-class ConsistencyModel(nn.Module):
-    """
-    This is ridiculous Unet structure, hey but it works!
-    """
-
-    def __init__(self, n_channel: int, eps: float = 0.002, D: int = 128) -> None:
-        super(ConsistencyModel, self).__init__()
-
-        self.eps = eps
+class Unet(nn.Module):
+    def __init__(self, 
+        n_channel: int,
+        D: int = 128,
+        device: torch.device = torch.device("cpu"),
+        ) -> None:
+        super(Unet, self).__init__()
+        self.device = device
 
         self.freqs = torch.exp(
             -math.log(10000) * torch.arange(start=0, end=D, dtype=torch.float32) / D
@@ -60,12 +112,6 @@ class ConsistencyModel(nn.Module):
         self.last = nn.Conv2d(2 * D + n_channel, n_channel, 3, padding=1)
 
     def forward(self, x, t) -> torch.Tensor:
-        if isinstance(t, float):
-            t = (
-                torch.tensor([t] * x.shape[0], dtype=torch.float32)
-                .to(x.device)
-                .unsqueeze(1)
-            )
         # time embedding
         args = t.float() * self.freqs[None].to(t.device)
         t_emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1).to(x.device)
@@ -96,29 +142,5 @@ class ConsistencyModel(nn.Module):
 
         x = self.last(torch.cat([x, x_ori], dim=1))
 
-        t = t - self.eps
-        c_skip_t = 0.25 / (t.pow(2) + 0.25)
-        c_out_t = 0.25 * t / ((t + self.eps).pow(2) + 0.25).pow(0.5)
-
-        return c_skip_t[:, :, None, None] * x_ori + c_out_t[:, :, None, None] * x
-
-    def loss(self, x, z, t1, t2, ema_model):
-        x2 = x + z * t2[:, :, None, None]
-        x2 = self(x2, t2)
-
-        with torch.no_grad():
-            x1 = x + z * t1[:, :, None, None]
-            x1 = ema_model(x1, t1)
-
-        return F.mse_loss(x1, x2)
-
-    @torch.no_grad()
-    def sample(self, x, ts: List[float]):
-        x = self(x, ts[0])
-
-        for t in ts[1:]:
-            z = torch.randn_like(x)
-            x = x + math.sqrt(t**2 - self.eps**2) * z
-            x = self(x, t)
-
         return x
+

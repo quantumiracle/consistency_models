@@ -4,7 +4,7 @@
 
 from typing import List
 from tqdm import tqdm
-import math
+import math, copy
 
 import torch
 from torch.utils.data import DataLoader
@@ -64,15 +64,14 @@ def train(
     n_channels=1,
     name="mnist",
 ):
-    model = ConsistencyModel(n_channels, D=256)
-    model.to(device)
+    model = ConsistencyModel(n_channels, D=256, device=device)
     optim = torch.optim.AdamW(model.parameters(), lr=1e-4)
-
     # Define \theta_{-}, which is EMA of the params
-    ema_model = ConsistencyModel(n_channels, D=256)
-    ema_model.to(device)
-    ema_model.load_state_dict(model.state_dict())
-
+    ema_model = copy.deepcopy(model)
+    # ema_model = ConsistencyModel(n_channels, D=256, device=device)
+    # ema_model.load_state_dict(model.state_dict())
+    # ema_model.to(device)
+    
     for epoch in range(1, n_epoch):
         N = math.ceil(math.sqrt((epoch * (150**2 - 4) / n_epoch) + 4) - 1) + 1
         boundaries = kerras_boundaries(7.0, 0.002, N, 80.0).to(device)
@@ -89,7 +88,7 @@ def train(
             t_0 = boundaries[t]
             t_1 = boundaries[t + 1]
 
-            loss = model.loss(x, z, t_0, t_1, ema_model=ema_model)
+            loss = model.loss(x, z, t_0, t_1, ema_model)
 
             loss.backward()
             if loss_ema is None:
@@ -127,7 +126,7 @@ def train(
             save_image(grid, f"./contents/ct_{name}_sample_2step_{epoch}.png")
 
             # save model
-            torch.save(model.state_dict(), f"./ct_{name}.pth")
+            model.save_model(f"./ct_{name}.pth")
 
 
 if __name__ == "__main__":
