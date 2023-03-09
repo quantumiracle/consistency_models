@@ -59,7 +59,7 @@ def cifar10_dl():
 
 def train(
     n_epoch: int = 100,
-    device="cuda:0",
+    device="cuda:1",
     dataloader=mnist_dl(),
     n_channels=1,
     name="mnist",
@@ -131,5 +131,5 @@ def train(
 
 
 if __name__ == "__main__":
-    # train()
-    train(dataloader=cifar10_dl(), n_channels=3, name="cifar10")
+    train()
+    # train(dataloader=cifar10_dl(), n_channels=3, name="cifar10")
